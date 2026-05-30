@@ -5,7 +5,7 @@ const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+//const PORT = process.env.PORT || 3000;
 const DATA_FILE = path.join(__dirname, 'data.json');
 
 // Initialize data store
@@ -36,7 +36,13 @@ function saveData() {
 loadData();
 
 app.use(express.json());
+app.get('/', (req, res) => {
+  res.json({ message: 'Hello from Express on Vercel!' });
+});
+
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'public'.split)));
+
+
 
 // Game symbols
