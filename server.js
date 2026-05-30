@@ -322,7 +322,7 @@ app.post('/api/buy-ice', (req, res) => {
     return res.json({ success: false, message: 'User not found' });
   }
   
-  const cost = amount * 10; // 10 dollars per ice unit
+  const cost = amount * 10;
   
   if (user.balance < cost) {
     return res.json({ success: false, message: 'Insufficient balance' });
@@ -337,7 +337,7 @@ app.post('/api/buy-ice', (req, res) => {
   res.json({ success: true, user: updatedUser });
 });
 
-// Add balance (for testing / payments)
+// Add balance
 app.post('/api/add-balance', (req, res) => {
   const { telegram_id, amount } = req.body;
   
@@ -378,7 +378,7 @@ app.post('/api/buy-diamonds', (req, res) => {
     return res.json({ success: false, message: 'User not found' });
   }
   
-  const cost = amount * 5; // 5 dollars per diamond
+  const cost = amount * 5;
   
   if (user.balance < cost) {
     return res.json({ success: false, message: 'Insufficient balance' });
