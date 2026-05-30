@@ -43,6 +43,6 @@ app.get('/', (req, res) => {
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'public'.split)));
 
-
+module.exports = app;
 
 // Game symbols
