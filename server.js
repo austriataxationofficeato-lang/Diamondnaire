@@ -1,57 +1,38 @@
 const express = require('express');
-const Database = require('better-sqlite3');
+const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const DATA_FILE = path.join(__dirname, 'data.json');
 
-// Initialize SQLite database
-const db = new Database('diamondnaire.db');
+// Initialize data store
+let db = {
+  users: {},
+  transactions: [],
+  game_history: [],
+  leaderboard: {}
+};
 
-// Create tables
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    telegram_id TEXT UNIQUE,
-    username TEXT,
-    balance REAL DEFAULT 0,
-    diamonds REAL DEFAULT 0,
-    points INTEGER DEFAULT 0,
-    tickets INTEGER DEFAULT 0,
-    ice INTEGER DEFAULT 0,
-    total_played INTEGER DEFAULT 0,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
+// Load data from file
+function loadData() {
+  try {
+    if (fs.existsSync(DATA_FILE)) {
+      const data = fs.readFileSync(DATA_FILE, 'utf8');
+      db = JSON.parse(data);
+    }
+  } catch (e) {
+    console.log('Starting fresh data store');
+  }
+}
 
-  CREATE TABLE IF NOT EXISTS transactions (
-    id TEXT PRIMARY KEY,
-    user_id TEXT,
-    type TEXT,
-    amount REAL,
-    description TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id)
-  );
+// Save data to file
+function saveData() {
+  fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2));
+}
 
-  CREATE TABLE IF NOT EXISTS game_history (
-    id TEXT PRIMARY KEY,
-    user_id TEXT,
-    reels TEXT,
-    bet_multiplier INTEGER,
-    win_amount REAL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id)
-  );
-
-  CREATE TABLE IF NOT EXISTS leaderboard (
-    user_id TEXT PRIMARY KEY,
-    username TEXT,
-    total_winnings REAL DEFAULT 0,
-    games_played INTEGER DEFAULT 0,
-    FOREIGN KEY (user_id) REFERENCES users(id)
-  );
-`);
+loadData();
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -93,11 +74,9 @@ const FAIR_REWARDS = {
   '🃏': { type: 'points', amount: 500 },
   '⭐': { type: 'points', amount: 250 },
   '🎟️': { type: 'tickets', amount: 10 },
-  '🧊': { type: 'ice', amount: 5 } // 5% as specified
+  '🧊': { type: 'ice', amount: 5 }
 };
 
-// Ticket multipliers
-const TICKET_MULTIPLIERS = [1, 3, 5, 9, 15, 25, 50, 100];
 const MAX_BET_TICKETS = 300;
 
 // Helper functions
@@ -190,24 +169,28 @@ function calculateWinnings(reels, betMultiplier) {
 app.post('/api/init', (req, res) => {
   const { telegram_id, username } = req.body;
   
-  let user = db.prepare('SELECT * FROM users WHERE telegram_id = ?').get(telegram_id);
-  
-  if (!user) {
-    const id = uuidv4();
-    db.prepare(`
-      INSERT INTO users (id, telegram_id, username, balance, diamonds, points, tickets, ice)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, telegram_id, username, 100, 5, 100, 50, 0);
-    
-    user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+  if (!db.users[telegram_id]) {
+    db.users[telegram_id] = {
+      id: telegram_id,
+      telegram_id,
+      username,
+      balance: 100,
+      diamonds: 5,
+      points: 100,
+      tickets: 50,
+      ice: 0,
+      total_played: 0,
+      created_at: new Date().toISOString()
+    };
+    saveData();
   }
   
-  res.json({ success: true, user });
+  res.json({ success: true, user: db.users[telegram_id] });
 });
 
 // Get user profile
 app.get('/api/user/:telegram_id', (req, res) => {
-  const user = db.prepare('SELECT * FROM users WHERE telegram_id = ?').get(req.params.telegram_id);
+  const user = db.users[req.params.telegram_id];
   
   if (!user) {
     return res.json({ success: false, message: 'User not found' });
@@ -220,7 +203,7 @@ app.get('/api/user/:telegram_id', (req, res) => {
 app.post('/api/spin', (req, res) => {
   const { telegram_id, bet_multiplier } = req.body;
   
-  const user = db.prepare('SELECT * FROM users WHERE telegram_id = ?').get(telegram_id);
+  const user = db.users[telegram_id];
   
   if (!user) {
     return res.json({ success: false, message: 'User not found' });
@@ -241,73 +224,59 @@ app.post('/api/spin', (req, res) => {
   const result = calculateWinnings(reels, bet_multiplier);
   
   // Update user balance
-  const updates = [];
-  const params = [];
-  
-  if (result.diamonds > 0) {
-    updates.push('diamonds = diamonds + ?');
-    params.push(result.diamonds);
-  }
-  if (result.dollars > 0) {
-    updates.push('balance = balance + ?');
-    params.push(result.dollars);
-  }
-  if (result.points !== 0) {
-    updates.push('points = points + ?');
-    params.push(result.points);
-  }
-  if (result.tickets > 0) {
-    updates.push('tickets = tickets + ?');
-    params.push(result.tickets);
-  }
-  if (result.ice > 0) {
-    updates.push('ice = ice + ?');
-    params.push(result.ice);
-  }
-  
-  updates.push('total_played = total_played + 1');
-  params.push(user.id);
-  
-  if (updates.length > 1) {
-    db.prepare(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`).run(...params);
-  }
+  if (result.diamonds > 0) user.diamonds += result.diamonds;
+  if (result.dollars > 0) user.balance += result.dollars;
+  if (result.points !== 0) user.points += result.points;
+  if (result.tickets > 0) user.tickets += result.tickets;
+  if (result.ice > 0) user.ice += result.ice;
+  user.total_played += 1;
   
   // Record game history
-  const historyId = uuidv4();
-  db.prepare(`
-    INSERT INTO game_history (id, user_id, reels, bet_multiplier, win_amount)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(historyId, user.id, JSON.stringify(reels), bet_multiplier, result.dollars + result.diamonds);
+  db.game_history.push({
+    id: uuidv4(),
+    user_id: telegram_id,
+    reels: JSON.stringify(reels),
+    bet_multiplier,
+    win_amount: result.dollars + result.diamonds,
+    created_at: new Date().toISOString()
+  });
+  
+  // Keep only last 1000 history entries
+  if (db.game_history.length > 1000) {
+    db.game_history = db.game_history.slice(-1000);
+  }
   
   // Update leaderboard
   if (result.dollars > 0 || result.diamonds > 0) {
-    db.prepare(`
-      INSERT INTO leaderboard (user_id, username, total_winnings, games_played)
-      VALUES (?, ?, ?, 1)
-      ON CONFLICT(user_id) DO UPDATE SET
-        total_winnings = total_winnings + ?,
-        games_played = games_played + 1
-    `).run(user.id, user.username, result.dollars + result.diamonds, result.dollars + result.diamonds);
+    const winnings = result.dollars + result.diamonds;
+    if (!db.leaderboard[telegram_id]) {
+      db.leaderboard[telegram_id] = {
+        user_id: telegram_id,
+        username: user.username,
+        total_winnings: winnings,
+        games_played: 1
+      };
+    } else {
+      db.leaderboard[telegram_id].total_winnings += winnings;
+      db.leaderboard[telegram_id].games_played += 1;
+    }
   }
   
-  // Get updated user
-  const updatedUser = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
+  saveData();
   
   res.json({
     success: true,
     reels,
     result,
-    user: updatedUser
+    user
   });
 });
 
 // Get leaderboard
 app.get('/api/leaderboard', (req, res) => {
-  const leaderboard = db.prepare(`
-    SELECT * FROM leaderboard
-    ORDER BY total_winnings DESC
-    LIMIT 100
-  `).all();
+  const leaderboard = Object.values(db.leaderboard)
+    .sort((a, b) => b.total_winnings - a.total_winnings)
+    .slice(0, 100);
   
   res.json({ success: true, leaderboard });
 });
@@ -316,7 +285,7 @@ app.get('/api/leaderboard', (req, res) => {
 app.post('/api/buy-ice', (req, res) => {
   const { telegram_id, amount } = req.body;
   
-  const user = db.prepare('SELECT * FROM users WHERE telegram_id = ?').get(telegram_id);
+  const user = db.users[telegram_id];
   
   if (!user) {
     return res.json({ success: false, message: 'User not found' });
@@ -328,42 +297,32 @@ app.post('/api/buy-ice', (req, res) => {
     return res.json({ success: false, message: 'Insufficient balance' });
   }
   
-  db.prepare(`
-    UPDATE users SET balance = balance - ?, ice = ice - ? WHERE id = ?
-  `).run(cost, amount, user.id);
+  user.balance -= cost;
+  user.ice = Math.max(0, user.ice - amount);
   
-  const updatedUser = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
+  saveData();
   
-  res.json({ success: true, user: updatedUser });
+  res.json({ success: true, user });
 });
 
 // Add balance
 app.post('/api/add-balance', (req, res) => {
   const { telegram_id, amount } = req.body;
   
-  db.prepare(`
-    UPDATE users SET balance = balance + ? WHERE telegram_id = ?
-  `).run(amount, telegram_id);
+  if (db.users[telegram_id]) {
+    db.users[telegram_id].balance += amount;
+    saveData();
+  }
   
-  const user = db.prepare('SELECT * FROM users WHERE telegram_id = ?').get(telegram_id);
-  
-  res.json({ success: true, user });
+  res.json({ success: true, user: db.users[telegram_id] });
 });
 
 // Get game history
 app.get('/api/history/:telegram_id', (req, res) => {
-  const user = db.prepare('SELECT * FROM users WHERE telegram_id = ?').get(req.params.telegram_id);
-  
-  if (!user) {
-    return res.json({ success: false, message: 'User not found' });
-  }
-  
-  const history = db.prepare(`
-    SELECT * FROM game_history
-    WHERE user_id = ?
-    ORDER BY created_at DESC
-    LIMIT 50
-  `).all(user.id);
+  const history = db.game_history
+    .filter(h => h.user_id === req.params.telegram_id)
+    .slice(-50)
+    .reverse();
   
   res.json({ success: true, history });
 });
@@ -372,7 +331,7 @@ app.get('/api/history/:telegram_id', (req, res) => {
 app.post('/api/buy-diamonds', (req, res) => {
   const { telegram_id, amount } = req.body;
   
-  const user = db.prepare('SELECT * FROM users WHERE telegram_id = ?').get(telegram_id);
+  const user = db.users[telegram_id];
   
   if (!user) {
     return res.json({ success: false, message: 'User not found' });
@@ -384,13 +343,12 @@ app.post('/api/buy-diamonds', (req, res) => {
     return res.json({ success: false, message: 'Insufficient balance' });
   }
   
-  db.prepare(`
-    UPDATE users SET balance = balance - ?, diamonds = diamonds + ? WHERE id = ?
-  `).run(cost, amount, user.id);
+  user.balance -= cost;
+  user.diamonds += amount;
   
-  const updatedUser = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
+  saveData();
   
-  res.json({ success: true, user: updatedUser });
+  res.json({ success: true, user });
 });
 
 // Serve the app
