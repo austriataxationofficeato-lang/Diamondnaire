@@ -9,7 +9,7 @@ const WEBHOOK_URL = process.env.WEBHOOK_URL; // e.g. https://yourdomain.com
 const APP_URL     = process.env.APP_URL || WEBHOOK_URL; // Mini App URL
 
 if (!BOT_TOKEN || !WEBHOOK_URL) {
-  console.error('Usage: TELEGRAM_BOT_TOKEN=xxx WEBHOOK_URL=https://yourdomain.com node setup-bot.js');
+  console.error('Usage: TELEGRAM_BOT_TOKEN= 8963441849:AAG-2jXIKg1tal1dRXRATTSLM2Pef3buNio WEBHOOK_URL= https://diamondnaire-ymqd.vercel.app/');
   process.exit(1);
 }
 
