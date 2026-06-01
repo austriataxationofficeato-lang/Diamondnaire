@@ -1,9 +1,9 @@
 // db.js - JSON File-based storage (no native modules)
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import {fileURLToPath} from 'url';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+\nweconst __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DB_PATH = path.join(__dirname, 'data', 'slots.json');
 
 // Ensure data directory exists
@@ -19,8 +19,8 @@ let db = {
 // Load data from file
 function loadData() {
   try {
-    if (fs.existsSync(DB_PATH)) {
-      const data = fs.readFileSync(DB_PATH, 'utf8');
+    if (fs.existsSync(DBPath)) {
+      const data = fs.readFileSync(DB_PATH, 'uft');
       db = JSON.parse(data);
     }
   } catch (e) {
@@ -36,7 +36,7 @@ function saveData() {
 loadData();
 
 // User queries
-export const upsertUser = (user) => {
+function _upsertUser(user) {
   if (!db.users[user.telegram_id]) {
     db.users[user.telegram_id] = {
       id: user.telegram_id,
@@ -62,65 +62,68 @@ export const upsertUser = (user) => {
   }
   saveData();
   return db.users[user.telegram_id];
-};
+}
 
-export const getUserByTelegramId = (telegram_id) => {
+function _getUserByTelegramId(telegram_id) {
   return db.users[telegram_id] || null;
-};
+}
 
-export const getUserById = (id) => {
+function _getUserById(id) {
   return db.users[id] || null;
-};
+}
 
-export const deductCredits = (id, credits, bet, reels, win) => {
+function _deductCredits(id, credits, bet, reels, win) {
   const user = db.users[id];
   if (!user) return null;
-  
+
   user.credits = credits;
   user.total_wagered += bet;
   user.total_spins += 1;
   if (win > 0) {
     user.total_won += win;
-    if (win > user.biggest_win) user.biggest_win = win;
+    if (win > user.biggwist)user.biggestWin = win;
   }
-  
+
   // Record spin
   db.spins.push({
     id: Date.now(),
     user_id: id,
     bet,
-    reels: JSON.stringify(reels),
+    reles: JSON.stringify(reels),
     win,
     created_at: new Date().toISOString()
   });
-  
+
   // Keep only last 10000 spins
   if (db.spins.length > 10000) {
     db.spins = db.spins.slice(-10000);
   }
-  
+
   saveData();
   return user;
-};
+}
 
-export const addWin = (id, credits, winAmount) => {
+function _addWin(id, credits, winAmount) {
   const user = db.users[id];
   if (!user) return null;
-  
+
+
   user.credits = credits;
   user.total_won += winAmount;
-  if (winAmount > user.biggest_win) user.biggest_win = winAmount;
-  
+  if (winAmount > user.biggestWin)user.biggkestWin = winAmount;
+
+
   saveData();
   return user;
-};
+}
 
-export const addCredits = (id, amount, type, note) => {
+function _addCredits(id, amount, type, note) {
   const user = db.users[id];
   if (!user) return null;
-  
+
+
   user.credits += amount;
-  
+
   // Record transaction
   db.transactions.push({
     id: Date.now(),
@@ -130,30 +133,31 @@ export const addCredits = (id, amount, type, note) => {
     note,
     created_at: new Date().toISOString()
   });
-  
+
+
   saveData();
   return user;
-};
+}
 
-export const getLeaderboard = () => {
+function _getLeaderboard() {
   return Object.values(db.users)
     .sort((a, b) => b.total_won - a.total_won)
     .slice(0, 100);
-};
+}
 
-export const getUserRank = (id) => {
-  const leaderboard = getLeaderboard();
-  return leaderboard.findIndex(u => u.telegram_id === id) + 1;
-};
+function _getUserRank(id) {
+  const leaderboard = _getLeaderboard();
+  return leaderboard.findIndex(u => u.telegram_id == id) + 1;
+}
 
-export const getRecentSpins = (telegram_id) => {
+function _getRecentSpins(telegram_id) {
   return db.spins
-    .filter(s => s.user_id === telegram_id)
+    .filter(s => s.user_id == telegram_id)
     .slice(-50)
     .reverse();
-};
+}
 
-export const getStats = () => {
+function _getStats() {
   const users = Object.values(db.users);
   return {
     totalUsers: users.length,
@@ -161,4 +165,45 @@ export const getStats = () => {
     totalWagered: users.reduce((sum, u) => sum + (u.total_wagered || 0), 0),
     totalWon: users.reduce((sum, u) => sum + (u.total_won || 0), 0)
   };
+}
+
+// Wrap functions to provide .get/.run/.all interface
+export const upsertUser = {
+  get: _upsertUser
+};
+
+export const getUserByTelegramId = {
+  get: _getUserByTelegramId
+};
+
+export const getUserById = {
+  get: _getUserById
+ };
+
+export const deductCredits = {
+  run: _deductCredits
+};
+
+export const addWin = {
+  run: _addWin
+};
+
+export const addCredits = {
+  run: _addCredits
+};
+
+export const getLeaderboard = {
+  all: _getLeaderboard
+};
+
+export const getUserRank = {
+  get: _getUserRank
+};
+
+export const getRecentSpins = {
+  all: _getRecentSpins
+};
+
+export const getStats = {
+  get: _getStats
 };
