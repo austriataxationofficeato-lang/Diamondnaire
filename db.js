@@ -1,139 +1,164 @@
-// db.js — SQLite database setup
-import Database from 'better-sqlite3';
+// db.js - JSON File-based storage (no native modules)
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DB_PATH = path.join(__dirname, 'data', 'slots.db');
+const DB_PATH = path.join(__dirname, 'data', 'slots.json');
 
-import fs from 'fs';
+// Ensure data directory exists
 fs.mkdirSync(path.join(__dirname, 'data'), { recursive: true });
 
-const db = new Database(DB_PATH);
+// Initialize empty database
+let db = {
+  users: {},
+  spins: [],
+  transactions: []
+};
 
-// Enable WAL mode for better concurrent reads
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+// Load data from file
+function loadData() {
+  try {
+    if (fs.existsSync(DB_PATH)) {
+      const data = fs.readFileSync(DB_PATH, 'utf8');
+      db = JSON.parse(data);
+    }
+  } catch (e) {
+    console.log('Starting fresh data store');
+  }
+}
 
-// ── Schema ──────────────────────────────────────────────────────────────────
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id              INTEGER PRIMARY KEY,
-    telegram_id     INTEGER UNIQUE NOT NULL,
-    username        TEXT,
-    first_name      TEXT NOT NULL,
-    last_name       TEXT,
-    photo_url       TEXT,
-    credits         INTEGER NOT NULL DEFAULT 100,
-    total_wagered   INTEGER NOT NULL DEFAULT 0,
-    total_won       INTEGER NOT NULL DEFAULT 0,
-    total_spins     INTEGER NOT NULL DEFAULT 0,
-    biggest_win     INTEGER NOT NULL DEFAULT 0,
-    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
-    last_seen       DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
+// Save data to file
+function saveData() {
+  fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
+}
 
-  CREATE TABLE IF NOT EXISTS spins (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id     INTEGER NOT NULL REFERENCES users(id),
-    bet         INTEGER NOT NULL,
-    reels       TEXT NOT NULL,
-    win         INTEGER NOT NULL DEFAULT 0,
-    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
+loadData();
 
-  CREATE TABLE IF NOT EXISTS transactions (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id         INTEGER NOT NULL REFERENCES users(id),
-    type            TEXT NOT NULL CHECK(type IN ('deposit','withdraw','win','bet','bonus')),
-    amount          INTEGER NOT NULL,
-    telegram_charge_id TEXT,
-    status          TEXT NOT NULL DEFAULT 'completed',
-    note            TEXT,
-    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
+// User queries
+export const upsertUser = (user) => {
+  if (!db.users[user.telegram_id]) {
+    db.users[user.telegram_id] = {
+      id: user.telegram_id,
+      telegram_id: user.telegram_id,
+      username: user.username || null,
+      first_name: user.first_name || 'Player',
+      last_name: user.last_name || null,
+      photo_url: user.photo_url || null,
+      credits: 100,
+      total_wagered: 0,
+      total_won: 0,
+      total_spins: 0,
+      biggest_win: 0,
+      created_at: new Date().toISOString(),
+      last_seen: new Date().toISOString()
+    };
+  } else {
+    db.users[user.telegram_id].last_seen = new Date().toISOString();
+    if (user.username) db.users[user.telegram_id].username = user.username;
+    if (user.first_name) db.users[user.telegram_id].first_name = user.first_name;
+    if (user.last_name) db.users[user.telegram_id].last_name = user.last_name;
+    if (user.photo_url) db.users[user.telegram_id].photo_url = user.photo_url;
+  }
+  saveData();
+  return db.users[user.telegram_id];
+};
 
-  CREATE INDEX IF NOT EXISTS idx_users_credits ON users(credits DESC);
-  CREATE INDEX IF NOT EXISTS idx_users_total_won ON users(total_won DESC);
-  CREATE INDEX IF NOT EXISTS idx_spins_user ON spins(user_id);
-  CREATE INDEX IF NOT EXISTS idx_transactions_user ON transactions(user_id);
-`);
+export const getUserByTelegramId = (telegram_id) => {
+  return db.users[telegram_id] || null;
+};
 
-// ── User queries ─────────────────────────────────────────────────────────────
-export const upsertUser = db.prepare(`
-  INSERT INTO users (telegram_id, username, first_name, last_name, photo_url)
-  VALUES (@telegram_id, @username, @first_name, @last_name, @photo_url)
-  ON CONFLICT(telegram_id) DO UPDATE SET
-    username   = excluded.username,
-    first_name = excluded.first_name,
-    last_name  = excluded.last_name,
-    photo_url  = excluded.photo_url,
-    last_seen  = CURRENT_TIMESTAMP
-  RETURNING *
-`);
+export const getUserById = (id) => {
+  return db.users[id] || null;
+};
 
-export const getUserByTelegramId = db.prepare(
-  `SELECT * FROM users WHERE telegram_id = ?`
-);
+export const deductCredits = (id, credits, bet, reels, win) => {
+  const user = db.users[id];
+  if (!user) return null;
+  
+  user.credits = credits;
+  user.total_wagered += bet;
+  user.total_spins += 1;
+  if (win > 0) {
+    user.total_won += win;
+    if (win > user.biggest_win) user.biggest_win = win;
+  }
+  
+  // Record spin
+  db.spins.push({
+    id: Date.now(),
+    user_id: id,
+    bet,
+    reels: JSON.stringify(reels),
+    win,
+    created_at: new Date().toISOString()
+  });
+  
+  // Keep only last 10000 spins
+  if (db.spins.length > 10000) {
+    db.spins = db.spins.slice(-10000);
+  }
+  
+  saveData();
+  return user;
+};
 
-export const getUserById = db.prepare(
-  `SELECT * FROM users WHERE id = ?`
-);
+export const addWin = (id, credits, winAmount) => {
+  const user = db.users[id];
+  if (!user) return null;
+  
+  user.credits = credits;
+  user.total_won += winAmount;
+  if (winAmount > user.biggest_win) user.biggest_win = winAmount;
+  
+  saveData();
+  return user;
+};
 
-export const deductCredits = db.prepare(`
-  UPDATE users SET credits = credits - ?, total_wagered = total_wagered + ?, total_spins = total_spins + 1
-  WHERE id = ? AND credits >= ?
-`);
+export const addCredits = (id, amount, type, note) => {
+  const user = db.users[id];
+  if (!user) return null;
+  
+  user.credits += amount;
+  
+  // Record transaction
+  db.transactions.push({
+    id: Date.now(),
+    user_id: id,
+    type,
+    amount,
+    note,
+    created_at: new Date().toISOString()
+  });
+  
+  saveData();
+  return user;
+};
 
-export const addWin = db.prepare(`
-  UPDATE users SET
-    credits    = credits + ?,
-    total_won  = total_won + ?,
-    biggest_win = MAX(biggest_win, ?)
-  WHERE id = ?
-`);
+export const getLeaderboard = () => {
+  return Object.values(db.users)
+    .sort((a, b) => b.total_won - a.total_won)
+    .slice(0, 100);
+};
 
-export const addCredits = db.prepare(`
-  UPDATE users SET credits = credits + ? WHERE id = ?
-`);
+export const getUserRank = (id) => {
+  const leaderboard = getLeaderboard();
+  return leaderboard.findIndex(u => u.telegram_id === id) + 1;
+};
 
-export const recordSpin = db.prepare(`
-  INSERT INTO spins (user_id, bet, reels, win) VALUES (?, ?, ?, ?)
-`);
+export const getRecentSpins = (telegram_id) => {
+  return db.spins
+    .filter(s => s.user_id === telegram_id)
+    .slice(-50)
+    .reverse();
+};
 
-export const recordTransaction = db.prepare(`
-  INSERT INTO transactions (user_id, type, amount, telegram_charge_id, status, note)
-  VALUES (@user_id, @type, @amount, @telegram_charge_id, @status, @note)
-`);
-
-export const getLeaderboard = db.prepare(`
-  SELECT 
-    telegram_id, first_name, username, photo_url,
-    credits, total_won, total_wagered, total_spins, biggest_win,
-    RANK() OVER (ORDER BY total_won DESC) as rank
-  FROM users
-  ORDER BY total_won DESC
-  LIMIT 50
-`);
-
-export const getUserRank = db.prepare(`
-  SELECT rank FROM (
-    SELECT id, RANK() OVER (ORDER BY total_won DESC) as rank FROM users
-  ) WHERE id = ?
-`);
-
-export const getRecentSpins = db.prepare(`
-  SELECT reels, win, bet, created_at FROM spins
-  WHERE user_id = ? ORDER BY created_at DESC LIMIT 20
-`);
-
-export const getStats = db.prepare(`
-  SELECT 
-    COUNT(*) as total_users,
-    SUM(total_spins) as total_spins,
-    SUM(total_wagered) as total_wagered,
-    SUM(total_won) as total_paid_out
-  FROM users
-`);
-
-export default db;
+export const getStats = () => {
+  const users = Object.values(db.users);
+  return {
+    totalUsers: users.length,
+    totalSpins: db.spins.length,
+    totalWagered: users.reduce((sum, u) => sum + (u.total_wagered || 0), 0),
+    totalWon: users.reduce((sum, u) => sum + (u.total_won || 0), 0)
+  };
+};
